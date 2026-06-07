@@ -132,7 +132,7 @@ Machine_Failure_Prediction_System/
 │
 ├── requirements.txt           # Project dependencies
 ├── README.md                  # Project documentation
-└── .gitignore
+└── streamlit_app_link
 ---
 
 ## ⚡ Installation

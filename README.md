@@ -1,15 +1,17 @@
+# ⚙️ MachineGuard AI — Predictive Maintenance System
+
+MachineGuard AI is a machine failure prediction platform built with Machine Learning and Streamlit. It helps identify potential equipment failures before they happen by analyzing industrial sensor readings and generating real-time risk assessments.
+
+The application combines **Logistic Regression** and **K-Nearest Neighbors (KNN)** models to predict machine failure probability, provide model comparisons, visualize performance metrics, and support both single-machine and batch predictions.
+
+---
+
 
 🚀 Live Demo: https://machinefailurepredictionsystem-26.streamlit.app/
 
 ## 📸 Application Preview
 <img width="2876" height="1704" alt="image" src="https://github.com/user-attachments/assets/a07b5d9c-58e1-42cf-871a-ec4d5e09113c" />
 <img width="2876" height="1214" alt="image" src="https://github.com/user-attachments/assets/983ce1b5-0ab1-4954-9c28-9cd6c9b8ee8e" />
-
-# ⚙️ MachineGuard AI — Predictive Maintenance System
-
-MachineGuard AI is a machine failure prediction platform built with Machine Learning and Streamlit. It helps identify potential equipment failures before they happen by analyzing industrial sensor readings and generating real-time risk assessments.
-
-The application combines **Logistic Regression** and **K-Nearest Neighbors (KNN)** models to predict machine failure probability, provide model comparisons, visualize performance metrics, and support both single-machine and batch predictions.
 
 ---
 

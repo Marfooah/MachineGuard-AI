@@ -1,63 +1,222 @@
-An end-to-end Machine Learning project that predicts machine failure using Logistic Regression and K-Nearest Neighbors (KNN). The system includes data preprocessing, model training, evaluation, and a deployed Streamlit web application for real-time predictions.
+# ⚙️ MachineGuard AI — Predictive Maintenance System
+
+MachineGuard AI is a machine failure prediction platform built with Machine Learning and Streamlit. It helps identify potential equipment failures before they happen by analyzing industrial sensor readings and generating real-time risk assessments.
+
+The application combines **Logistic Regression** and **K-Nearest Neighbors (KNN)** models to predict machine failure probability, provide model comparisons, visualize performance metrics, and support both single-machine and batch predictions.
 
 ---
 
 ## 🚀 Features
 
-- Data cleaning and preprocessing
-- Feature scaling using StandardScaler
-- Handling categorical data using Label Encoding
-- Prevention of data leakage
-- Model training using:
-  - Logistic Regression
-  - K-Nearest Neighbors (KNN)
-- Model evaluation:
-  - Accuracy Score
-  - Confusion Matrix
-  - Classification Report
-  - ROC Curve
-- Interactive Streamlit web app for predictions
+### 🔮 Real-Time Failure Prediction
+
+* Predict machine failure from live sensor inputs
+* Dual-model prediction using Logistic Regression and KNN
+* Combined risk assessment score
+* Model agreement analysis
+
+### 📊 Model Analytics Dashboard
+
+* Confusion matrices
+* ROC Curve and AUC analysis
+* K-value tuning visualization
+* Feature importance analysis
+* Classification reports
+
+### 🗂️ Interactive Data Explorer
+
+* Explore all machine telemetry records
+* Filter by machine type and failure status
+* Distribution analysis
+* Correlation heatmaps
+* Raw dataset inspection
+
+### 📤 Batch Scoring
+
+* Upload CSV files containing multiple machine records
+* Generate predictions for hundreds of machines simultaneously
+* Download enriched prediction results
+
+### 🎨 Modern Dashboard UI
+
+* Fully customized Streamlit interface
+* Responsive layout
+* Interactive Plotly visualizations
+* Industrial-themed design system
 
 ---
 
-## 📊 Dataset
+## 🧠 Machine Learning Pipeline
 
-The dataset contains machine operating parameters such as:
+### Data Preprocessing
 
-- Air Temperature
-- Process Temperature
-- Rotational Speed
-- Torque
-- Tool Wear
-- Machine Type (L, M, H)
+* Missing value handling
+* Label encoding for machine type
+* Feature scaling using StandardScaler
+* Removal of data leakage columns
+* Train-test split with stratification
 
-Target variable:
-- **Machine Failure (0 = No Failure, 1 = Failure)**
+### Models Used
 
-Note: Leakage columns (`TWF`, `HDF`, `PWF`, `OSF`, `RNF`) were removed to ensure model integrity.
+#### Logistic Regression
+
+Used as a baseline interpretable classification model.
+
+Advantages:
+
+* Fast inference
+* Probabilistic predictions
+* Easy interpretability through coefficients
+
+#### K-Nearest Neighbors (KNN)
+
+Used to capture non-linear relationships within machine telemetry data.
+
+Advantages:
+
+* Simple yet effective
+* Learns complex local patterns
+* No assumptions about data distribution
+
+### Model Selection
+
+The system evaluates multiple K values:
+
+```text
+K = 3, 5, 7, 9
+```
+
+The best-performing K value is automatically selected based on validation accuracy.
 
 ---
 
-## 🧠 Models Used
+## 📈 Dataset Features
 
-### 1. Logistic Regression
-- Handles class imbalance using `class_weight='balanced'`
-- Provides interpretable feature importance
+The model predicts machine failure using six operational variables:
 
-### 2. K-Nearest Neighbors (KNN)
-- Tested multiple K values
-- Selected best K based on accuracy
+| Feature                 | Description                    |
+| ----------------------- | ------------------------------ |
+| Type                    | Product quality type (L, M, H) |
+| Air temperature [K]     | Ambient operating temperature  |
+| Process temperature [K] | Internal process temperature   |
+| Rotational speed [rpm]  | Machine rotational speed       |
+| Torque [Nm]             | Applied rotational force       |
+| Tool wear [min]         | Tool usage duration            |
+
+Target Variable:
+
+```text
+Machine failure
+```
+
+---
+
+## 🏗️ Project Structure
+
+```text
+Machine_Failure_Prediction_System/
+│
+├── app.py                      # Streamlit web application
+├── model.py                    # ML pipeline, training, evaluation & prediction logic
+├── ai.csv                      # Machine failure dataset
+│
+├── Machine_Failure_Prediction.ipynb
+│                               # Model development & experimentation notebook
+│
+├── requirements.txt           # Project dependencies
+├── README.md                  # Project documentation
+└── .gitignore
+---
+
+## ⚡ Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/yourusername/machineguard-ai.git
+cd machineguard-ai
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run the application:
+
+```bash
+streamlit run app.py
+```
 
 ---
 
 ## 🛠️ Tech Stack
 
-- Python
-- Pandas, NumPy
-- Scikit-learn
-- Matplotlib
-- Streamlit
+### Frontend
+
+* Streamlit
+
+### Data Processing
+
+* Pandas
+* NumPy
+
+### Machine Learning
+
+* Scikit-learn
+
+  * Logistic Regression
+  * K-Nearest Neighbors
+  * StandardScaler
+  * LabelEncoder
+
+### Visualization
+
+* Plotly
 
 ---
 
-## 📁 Project Structure
+## 📊 Key Functionalities
+
+✔ Predict machine failures in real time
+
+✔ Compare multiple machine learning models
+
+✔ Visualize performance metrics
+
+✔ Analyze feature importance
+
+✔ Explore machine telemetry data
+
+✔ Batch process CSV uploads
+
+✔ Download prediction reports
+
+---
+
+## 🎯 Learning Outcomes
+
+This project demonstrates:
+
+* End-to-end machine learning workflow
+* Data preprocessing and feature engineering
+* Model training and evaluation
+* Hyperparameter tuning
+* Interactive dashboard development
+* Data visualization
+* Production-style ML application deployment
+
+---
+
+## 📜 License
+
+This project is intended for educational and portfolio purposes.
+
+---
+
+## 👨‍💻 Author
+
+**Habibti**
+
+Built as a Machine Learning and Data Science project focused on predictive maintenance and industrial AI applications.

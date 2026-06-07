@@ -1,3 +1,10 @@
+
+🚀 Live Demo: https://machinefailurepredictionsystem-26.streamlit.app/
+
+## 📸 Application Preview
+<img width="2876" height="1708" alt="image" src="https://github.com/user-attachments/assets/99512f86-5561-4d66-9cec-39b8e0bea74a" />
+<img width="2876" height="1214" alt="image" src="https://github.com/user-attachments/assets/983ce1b5-0ab1-4954-9c28-9cd6c9b8ee8e" />
+
 # ⚙️ MachineGuard AI — Predictive Maintenance System
 
 MachineGuard AI is a machine failure prediction platform built with Machine Learning and Streamlit. It helps identify potential equipment failures before they happen by analyzing industrial sensor readings and generating real-time risk assessments.

@@ -226,6 +226,6 @@ This project is intended for educational and portfolio purposes.
 
 ## 👨‍💻 Author
 
-**Habibti**
+**Ayesha Tariq**
 
 Built as a Machine Learning and Data Science project focused on predictive maintenance and industrial AI applications.

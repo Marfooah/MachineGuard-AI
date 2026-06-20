@@ -8,8 +8,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from imblearn.combine import SMOTEENN
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.frozen import FrozenEstimator
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -35,15 +33,18 @@ FEATURE_COLS = [
     "Tool wear [min]",
 ]
 TYPE_LABELS = {"L": "Low", "M": "Medium", "H": "High"}
-K_VALUES = [3, 5, 7, 9]
 
+# Search space: small k for recall, large k for smoother probabilities
+K_VALUES = [11, 21, 31, 51]
+
+# Threshold tuned for maintenance: missing a failure costs more than a false alarm
 FAILURE_THRESHOLD = 0.30
 
 
 @dataclass
 class ModelBundle:
     lr: LogisticRegression
-    knn: CalibratedClassifierCV
+    knn: KNeighborsClassifier
     scaler: StandardScaler
     encoder: LabelEncoder
     feature_cols: list[str]
@@ -63,7 +64,9 @@ def load_raw_data(csv_path: str | Path) -> pd.DataFrame:
     return pd.read_csv(csv_path)
 
 
-def preprocess(df: pd.DataFrame, encoder: LabelEncoder | None = None) -> tuple[pd.DataFrame, LabelEncoder]:
+def preprocess(
+    df: pd.DataFrame, encoder: LabelEncoder | None = None
+) -> tuple[pd.DataFrame, LabelEncoder]:
     data = df.copy()
     data.drop(columns=[c for c in DROP_COLS if c in data.columns], inplace=True)
     data.fillna(data.median(numeric_only=True), inplace=True)
@@ -85,6 +88,7 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
     X = processed_df.drop(columns=[TARGET])
     y = processed_df[TARGET]
 
+    # Stratified split preserves the ~3.4% failure rate in both sets
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
@@ -93,25 +97,32 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    # SMOTEENN: oversample minority + clean noisy majority boundary samples
-    smoteenn = SMOTEENN(random_state=42)
-    X_train_resampled, y_train_resampled = smoteenn.fit_resample(X_train_scaled, y_train)
-
     # ── Logistic Regression ────────────────────────────────────────────────────
-    # Trained on original (not resampled) data — class_weight="balanced" handles imbalance
+    # class_weight="balanced" is sufficient — no oversampling needed for LR
     lr = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)
     lr.fit(X_train_scaled, y_train)
     y_prob_lr = lr.predict_proba(X_test_scaled)[:, 1]
     y_pred_lr = (y_prob_lr >= FAILURE_THRESHOLD).astype(int)
 
-    # ── KNN: find best k on SMOTEENN-balanced data ─────────────────────────────
+    # ── SMOTEENN for KNN only ──────────────────────────────────────────────────
+    # Oversample minority + clean noisy majority boundary points.
+    # Applied only to KNN training — LR doesn't need it.
+    smoteenn = SMOTEENN(random_state=42)
+    X_train_resampled, y_train_resampled = smoteenn.fit_resample(
+        X_train_scaled, y_train
+    )
+
+    # ── KNN with large k + distance weighting ─────────────────────────────────
+    # Large k (11–51) gives fine-grained vote fractions (e.g. k=51 → 52 levels).
+    # weights="distance" down-weights far majority neighbors.
+    # Select best k by F1 on failure class — not accuracy, which favours majority.
     knn_k_accuracies: dict[int, float] = {}
     best_k, best_f1 = K_VALUES[0], 0.0
 
     for k in K_VALUES:
-        knn_raw = KNeighborsClassifier(n_neighbors=k, weights="distance")
-        knn_raw.fit(X_train_resampled, y_train_resampled)
-        probs = knn_raw.predict_proba(X_test_scaled)[:, 1]
+        knn_candidate = KNeighborsClassifier(n_neighbors=k, weights="distance")
+        knn_candidate.fit(X_train_resampled, y_train_resampled)
+        probs = knn_candidate.predict_proba(X_test_scaled)[:, 1]
         preds = (probs >= FAILURE_THRESHOLD).astype(int)
         f1 = f1_score(y_test, preds, zero_division=0)
         acc = accuracy_score(y_test, preds)
@@ -119,25 +130,14 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
         if f1 > best_f1:
             best_k, best_f1 = k, f1
 
-    # Train final KNN on resampled data
-    knn_base = KNeighborsClassifier(n_neighbors=best_k, weights="distance")
-    knn_base.fit(X_train_resampled, y_train_resampled)
-
-    # ── Calibrate KNN using sklearn 1.9.0+ API ────────────────────────────────
-    # cv="prefit" was removed in sklearn 1.9.0. The new way to calibrate an
-    # already-fitted model is FrozenEstimator, which freezes knn_base and
-    # uses the calibration data only to fit the isotonic calibrator.
-    knn_calibrated = CalibratedClassifierCV(
-        FrozenEstimator(knn_base), method="isotonic"
-    )
-    knn_calibrated.fit(X_test_scaled, y_test)
-
-    y_prob_knn = knn_calibrated.predict_proba(X_test_scaled)[:, 1]
+    knn_final = KNeighborsClassifier(n_neighbors=best_k, weights="distance")
+    knn_final.fit(X_train_resampled, y_train_resampled)
+    y_prob_knn = knn_final.predict_proba(X_test_scaled)[:, 1]
     y_pred_knn = (y_prob_knn >= FAILURE_THRESHOLD).astype(int)
 
     return ModelBundle(
         lr=lr,
-        knn=knn_calibrated,
+        knn=knn_final,
         scaler=scaler,
         encoder=encoder,
         feature_cols=list(X.columns),
@@ -154,7 +154,9 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
     )
 
 
-def build_input_frame(inputs: dict, encoder: LabelEncoder, feature_cols: list[str]) -> pd.DataFrame:
+def build_input_frame(
+    inputs: dict, encoder: LabelEncoder, feature_cols: list[str]
+) -> pd.DataFrame:
     row = {col: inputs[col] for col in feature_cols}
     frame = pd.DataFrame([row])
     frame["Type"] = encoder.transform(frame["Type"])
@@ -200,7 +202,9 @@ def roc_data(y_true, y_prob):
 
 
 def feature_ranges(raw_df: pd.DataFrame) -> dict:
-    numeric = raw_df.drop(columns=[c for c in DROP_COLS + LEAKAGE_COLS + [TARGET] if c in raw_df.columns])
+    numeric = raw_df.drop(
+        columns=[c for c in DROP_COLS + LEAKAGE_COLS + [TARGET] if c in raw_df.columns]
+    )
     ranges = {}
     for col in numeric.select_dtypes(include="number").columns:
         ranges[col] = (float(numeric[col].min()), float(numeric[col].max()))

@@ -9,12 +9,14 @@ import numpy as np
 import pandas as pd
 from imblearn.combine import SMOTEENN
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.frozen import FrozenEstimator
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     auc,
     classification_report,
     confusion_matrix,
+    f1_score,
     roc_curve,
 )
 from sklearn.model_selection import train_test_split
@@ -35,14 +37,13 @@ FEATURE_COLS = [
 TYPE_LABELS = {"L": "Low", "M": "Medium", "H": "High"}
 K_VALUES = [3, 5, 7, 9]
 
-# Lower threshold: in maintenance, missing a failure costs more than a false alarm
 FAILURE_THRESHOLD = 0.30
 
 
 @dataclass
 class ModelBundle:
     lr: LogisticRegression
-    knn: CalibratedClassifierCV          # wrapped KNN
+    knn: CalibratedClassifierCV
     scaler: StandardScaler
     encoder: LabelEncoder
     feature_cols: list[str]
@@ -84,7 +85,6 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
     X = processed_df.drop(columns=[TARGET])
     y = processed_df[TARGET]
 
-    # Stratified split keeps ~3.4% failure rate in both train and test
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
@@ -93,22 +93,18 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    # ── SMOTEENN: oversample minority + remove noisy majority boundary samples ─
-    # Better than plain SMOTE for KNN because it cleans up the decision boundary,
-    # giving KNN much cleaner neighborhoods to vote from.
+    # SMOTEENN: oversample minority + clean noisy majority boundary samples
     smoteenn = SMOTEENN(random_state=42)
     X_train_resampled, y_train_resampled = smoteenn.fit_resample(X_train_scaled, y_train)
 
     # ── Logistic Regression ────────────────────────────────────────────────────
-    # Uses class_weight="balanced" only — no SMOTE on top (avoids double-correction)
+    # Trained on original (not resampled) data — class_weight="balanced" handles imbalance
     lr = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)
-    lr.fit(X_train_scaled, y_train)          # trained on original scaled data
+    lr.fit(X_train_scaled, y_train)
     y_prob_lr = lr.predict_proba(X_test_scaled)[:, 1]
     y_pred_lr = (y_prob_lr >= FAILURE_THRESHOLD).astype(int)
 
-    # ── KNN: find best k on SMOTEENN-balanced data, then calibrate probabilities ─
-    # CalibratedClassifierCV with isotonic regression converts KNN's coarse
-    # vote-fractions (0, 0.2, 0.4…) into smooth, meaningful probabilities.
+    # ── KNN: find best k on SMOTEENN-balanced data ─────────────────────────────
     knn_k_accuracies: dict[int, float] = {}
     best_k, best_f1 = K_VALUES[0], 0.0
 
@@ -117,20 +113,23 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
         knn_raw.fit(X_train_resampled, y_train_resampled)
         probs = knn_raw.predict_proba(X_test_scaled)[:, 1]
         preds = (probs >= FAILURE_THRESHOLD).astype(int)
-        # Optimise for F1 on failure class, not raw accuracy — better for imbalance
-        from sklearn.metrics import f1_score
         f1 = f1_score(y_test, preds, zero_division=0)
         acc = accuracy_score(y_test, preds)
         knn_k_accuracies[k] = acc
         if f1 > best_f1:
             best_k, best_f1 = k, f1
 
-    # Train final KNN on resampled data, then calibrate on the real test distribution
+    # Train final KNN on resampled data
     knn_base = KNeighborsClassifier(n_neighbors=best_k, weights="distance")
     knn_base.fit(X_train_resampled, y_train_resampled)
 
-    # cv="prefit" → use the already-fitted knn_base; calibrate on X_test
-    knn_calibrated = CalibratedClassifierCV(knn_base, cv="prefit", method="isotonic")
+    # ── Calibrate KNN using sklearn 1.9.0+ API ────────────────────────────────
+    # cv="prefit" was removed in sklearn 1.9.0. The new way to calibrate an
+    # already-fitted model is FrozenEstimator, which freezes knn_base and
+    # uses the calibration data only to fit the isotonic calibrator.
+    knn_calibrated = CalibratedClassifierCV(
+        FrozenEstimator(knn_base), method="isotonic"
+    )
     knn_calibrated.fit(X_test_scaled, y_test)
 
     y_prob_knn = knn_calibrated.predict_proba(X_test_scaled)[:, 1]

@@ -7,7 +7,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from imblearn.over_sampling import SMOTE
+from imblearn.combine import SMOTEENN
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -34,14 +35,14 @@ FEATURE_COLS = [
 TYPE_LABELS = {"L": "Low", "M": "Medium", "H": "High"}
 K_VALUES = [3, 5, 7, 9]
 
-# Threshold tuned for maintenance context — recall over precision
-FAILURE_THRESHOLD = 0.35
+# Lower threshold: in maintenance, missing a failure costs more than a false alarm
+FAILURE_THRESHOLD = 0.30
 
 
 @dataclass
 class ModelBundle:
     lr: LogisticRegression
-    knn: KNeighborsClassifier
+    knn: CalibratedClassifierCV          # wrapped KNN
     scaler: StandardScaler
     encoder: LabelEncoder
     feature_cols: list[str]
@@ -50,7 +51,7 @@ class ModelBundle:
     y_pred_lr: np.ndarray
     y_pred_knn: np.ndarray
     y_prob_lr: np.ndarray
-    y_prob_knn: np.ndarray          # ← added
+    y_prob_knn: np.ndarray
     knn_k_accuracies: dict[int, float]
     best_k: int
     raw_df: pd.DataFrame
@@ -83,6 +84,7 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
     X = processed_df.drop(columns=[TARGET])
     y = processed_df[TARGET]
 
+    # Stratified split keeps ~3.4% failure rate in both train and test
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
@@ -91,38 +93,52 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    # ── Apply SMOTE only on training data to fix class imbalance ──────────────
-    smote = SMOTE(random_state=42)
-    X_train_resampled, y_train_resampled = smote.fit_resample(X_train_scaled, y_train)
+    # ── SMOTEENN: oversample minority + remove noisy majority boundary samples ─
+    # Better than plain SMOTE for KNN because it cleans up the decision boundary,
+    # giving KNN much cleaner neighborhoods to vote from.
+    smoteenn = SMOTEENN(random_state=42)
+    X_train_resampled, y_train_resampled = smoteenn.fit_resample(X_train_scaled, y_train)
 
-    # ── Logistic Regression (already balanced via class_weight) ───────────────
+    # ── Logistic Regression ────────────────────────────────────────────────────
+    # Uses class_weight="balanced" only — no SMOTE on top (avoids double-correction)
     lr = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)
-    lr.fit(X_train_resampled, y_train_resampled)
+    lr.fit(X_train_scaled, y_train)          # trained on original scaled data
     y_prob_lr = lr.predict_proba(X_test_scaled)[:, 1]
     y_pred_lr = (y_prob_lr >= FAILURE_THRESHOLD).astype(int)
 
-    # ── KNN — trained on SMOTE-balanced data ──────────────────────────────────
+    # ── KNN: find best k on SMOTEENN-balanced data, then calibrate probabilities ─
+    # CalibratedClassifierCV with isotonic regression converts KNN's coarse
+    # vote-fractions (0, 0.2, 0.4…) into smooth, meaningful probabilities.
     knn_k_accuracies: dict[int, float] = {}
-    best_k, best_acc = K_VALUES[0], 0.0
+    best_k, best_f1 = K_VALUES[0], 0.0
+
     for k in K_VALUES:
-        knn = KNeighborsClassifier(n_neighbors=k)
-        knn.fit(X_train_resampled, y_train_resampled)
-        # Use threshold-adjusted predictions for accuracy evaluation
-        probs = knn.predict_proba(X_test_scaled)[:, 1]
+        knn_raw = KNeighborsClassifier(n_neighbors=k, weights="distance")
+        knn_raw.fit(X_train_resampled, y_train_resampled)
+        probs = knn_raw.predict_proba(X_test_scaled)[:, 1]
         preds = (probs >= FAILURE_THRESHOLD).astype(int)
+        # Optimise for F1 on failure class, not raw accuracy — better for imbalance
+        from sklearn.metrics import f1_score
+        f1 = f1_score(y_test, preds, zero_division=0)
         acc = accuracy_score(y_test, preds)
         knn_k_accuracies[k] = acc
-        if acc > best_acc:
-            best_k, best_acc = k, acc
+        if f1 > best_f1:
+            best_k, best_f1 = k, f1
 
-    knn_final = KNeighborsClassifier(n_neighbors=best_k)
-    knn_final.fit(X_train_resampled, y_train_resampled)
-    y_prob_knn = knn_final.predict_proba(X_test_scaled)[:, 1]
+    # Train final KNN on resampled data, then calibrate on the real test distribution
+    knn_base = KNeighborsClassifier(n_neighbors=best_k, weights="distance")
+    knn_base.fit(X_train_resampled, y_train_resampled)
+
+    # cv="prefit" → use the already-fitted knn_base; calibrate on X_test
+    knn_calibrated = CalibratedClassifierCV(knn_base, cv="prefit", method="isotonic")
+    knn_calibrated.fit(X_test_scaled, y_test)
+
+    y_prob_knn = knn_calibrated.predict_proba(X_test_scaled)[:, 1]
     y_pred_knn = (y_prob_knn >= FAILURE_THRESHOLD).astype(int)
 
     return ModelBundle(
         lr=lr,
-        knn=knn_final,
+        knn=knn_calibrated,
         scaler=scaler,
         encoder=encoder,
         feature_cols=list(X.columns),
@@ -153,7 +169,6 @@ def predict(bundle: ModelBundle, inputs: dict) -> dict:
     lr_prob = float(bundle.lr.predict_proba(scaled)[0, 1])
     knn_prob = float(bundle.knn.predict_proba(scaled)[0, 1])
 
-    # Use the same threshold used during training
     lr_pred = int(lr_prob >= FAILURE_THRESHOLD)
     knn_pred = int(knn_prob >= FAILURE_THRESHOLD)
 

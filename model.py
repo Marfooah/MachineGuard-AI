@@ -7,18 +7,16 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from imblearn.combine import SMOTEENN
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     auc,
     classification_report,
     confusion_matrix,
-    f1_score,
     roc_curve,
 )
 from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 LEAKAGE_COLS = ["TWF", "HDF", "PWF", "OSF", "RNF"]
@@ -34,9 +32,6 @@ FEATURE_COLS = [
 ]
 TYPE_LABELS = {"L": "Low", "M": "Medium", "H": "High"}
 
-# Search space: small k for recall, large k for smoother probabilities
-K_VALUES = [11, 21, 31, 51]
-
 # Threshold tuned for maintenance: missing a failure costs more than a false alarm
 FAILURE_THRESHOLD = 0.30
 
@@ -44,18 +39,17 @@ FAILURE_THRESHOLD = 0.30
 @dataclass
 class ModelBundle:
     lr: LogisticRegression
-    knn: KNeighborsClassifier
+    rf: RandomForestClassifier
     scaler: StandardScaler
     encoder: LabelEncoder
     feature_cols: list[str]
     X_test: pd.DataFrame
     y_test: pd.Series
     y_pred_lr: np.ndarray
-    y_pred_knn: np.ndarray
+    y_pred_rf: np.ndarray
     y_prob_lr: np.ndarray
-    y_prob_knn: np.ndarray
-    knn_k_accuracies: dict[int, float]
-    best_k: int
+    y_prob_rf: np.ndarray
+    rf_feature_importances: dict[str, float]
     raw_df: pd.DataFrame
     processed_df: pd.DataFrame
 
@@ -98,57 +92,46 @@ def train_models(csv_path: str | Path = "ai.csv") -> ModelBundle:
     X_test_scaled = scaler.transform(X_test)
 
     # ── Logistic Regression ────────────────────────────────────────────────────
-    # class_weight="balanced" is sufficient — no oversampling needed for LR
+    # class_weight="balanced" handles imbalance natively — no oversampling needed
     lr = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)
     lr.fit(X_train_scaled, y_train)
     y_prob_lr = lr.predict_proba(X_test_scaled)[:, 1]
     y_pred_lr = (y_prob_lr >= FAILURE_THRESHOLD).astype(int)
 
-    # ── SMOTEENN for KNN only ──────────────────────────────────────────────────
-    # Oversample minority + clean noisy majority boundary points.
-    # Applied only to KNN training — LR doesn't need it.
-    smoteenn = SMOTEENN(random_state=42)
-    X_train_resampled, y_train_resampled = smoteenn.fit_resample(
-        X_train_scaled, y_train
+    # ── Random Forest ──────────────────────────────────────────────────────────
+    # class_weight="balanced_subsample" re-balances within each bootstrap sample,
+    # which is more robust than global balancing for ensemble methods.
+    # RF produces true probability estimates via averaging across 200 trees —
+    # no coarse vote-fraction problem like KNN.
+    # Does not need feature scaling (tree-based model).
+    rf = RandomForestClassifier(
+        n_estimators=200,
+        class_weight="balanced_subsample",
+        max_depth=None,
+        min_samples_leaf=2,
+        random_state=42,
+        n_jobs=-1,
     )
+    rf.fit(X_train, y_train)  # raw (unscaled) — RF doesn't need StandardScaler
+    y_prob_rf = rf.predict_proba(X_test)[:, 1]
+    y_pred_rf = (y_prob_rf >= FAILURE_THRESHOLD).astype(int)
 
-    # ── KNN with large k + distance weighting ─────────────────────────────────
-    # Large k (11–51) gives fine-grained vote fractions (e.g. k=51 → 52 levels).
-    # weights="distance" down-weights far majority neighbors.
-    # Select best k by F1 on failure class — not accuracy, which favours majority.
-    knn_k_accuracies: dict[int, float] = {}
-    best_k, best_f1 = K_VALUES[0], 0.0
-
-    for k in K_VALUES:
-        knn_candidate = KNeighborsClassifier(n_neighbors=k, weights="distance")
-        knn_candidate.fit(X_train_resampled, y_train_resampled)
-        probs = knn_candidate.predict_proba(X_test_scaled)[:, 1]
-        preds = (probs >= FAILURE_THRESHOLD).astype(int)
-        f1 = f1_score(y_test, preds, zero_division=0)
-        acc = accuracy_score(y_test, preds)
-        knn_k_accuracies[k] = acc
-        if f1 > best_f1:
-            best_k, best_f1 = k, f1
-
-    knn_final = KNeighborsClassifier(n_neighbors=best_k, weights="distance")
-    knn_final.fit(X_train_resampled, y_train_resampled)
-    y_prob_knn = knn_final.predict_proba(X_test_scaled)[:, 1]
-    y_pred_knn = (y_prob_knn >= FAILURE_THRESHOLD).astype(int)
+    # Feature importances from the forest (mean decrease in impurity)
+    rf_feature_importances = dict(zip(list(X.columns), rf.feature_importances_))
 
     return ModelBundle(
         lr=lr,
-        knn=knn_final,
+        rf=rf,
         scaler=scaler,
         encoder=encoder,
         feature_cols=list(X.columns),
         X_test=X_test.reset_index(drop=True),
         y_test=y_test.reset_index(drop=True),
         y_pred_lr=y_pred_lr,
-        y_pred_knn=y_pred_knn,
+        y_pred_rf=y_pred_rf,
         y_prob_lr=y_prob_lr,
-        y_prob_knn=y_prob_knn,
-        knn_k_accuracies=knn_k_accuracies,
-        best_k=best_k,
+        y_prob_rf=y_prob_rf,
+        rf_feature_importances=rf_feature_importances,
         raw_df=raw_df,
         processed_df=processed_df,
     )
@@ -168,19 +151,20 @@ def predict(bundle: ModelBundle, inputs: dict) -> dict:
     scaled = bundle.scaler.transform(frame)
 
     lr_prob = float(bundle.lr.predict_proba(scaled)[0, 1])
-    knn_prob = float(bundle.knn.predict_proba(scaled)[0, 1])
+    # RF uses raw features (unscaled), same as training
+    rf_prob = float(bundle.rf.predict_proba(frame)[0, 1])
 
     lr_pred = int(lr_prob >= FAILURE_THRESHOLD)
-    knn_pred = int(knn_prob >= FAILURE_THRESHOLD)
+    rf_pred = int(rf_prob >= FAILURE_THRESHOLD)
 
     return {
         "lr_pred": lr_pred,
-        "knn_pred": knn_pred,
+        "rf_pred": rf_pred,
         "lr_prob": lr_prob,
-        "knn_prob": knn_prob,
+        "rf_prob": rf_prob,
         "lr_label": "Failure" if lr_pred == 1 else "No Failure",
-        "knn_label": "Failure" if knn_pred == 1 else "No Failure",
-        "agreement": lr_pred == knn_pred,
+        "rf_label": "Failure" if rf_pred == 1 else "No Failure",
+        "agreement": lr_pred == rf_pred,
     }
 
 

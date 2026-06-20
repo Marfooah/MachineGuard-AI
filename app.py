@@ -36,7 +36,7 @@ C = {
     "red": "#f87171",
     "amber": "#fbbf24",
     "lr": "#22d3ee",
-    "knn": "#a78bfa",
+    "rf": "#a78bfa",
 }
 
 PLOTLY_LAYOUT = dict(
@@ -738,7 +738,7 @@ def page_overview(bundle):
         ("📊", "Total Records", f"{total:,}", "Sensor readings analyzed", C["accent"]),
         ("🔴", "Failure Events", f"{failures:,}", f"{failure_rate:.2f}% of dataset", C["red"]),
         ("🎯", "LR Accuracy", f"{lr_acc:.1%}", "On held-out test set", C["green"]),
-        ("🔢", "Optimal K", str(bundle.best_k), "KNN neighbors", C["accent2"]),
+        ("🌲", "RF Trees", "200", "Random Forest estimators", C["accent2"]),
     ]
     for col, (icon, label, val, sub, color) in zip(cols, stats):
         with col:
@@ -754,7 +754,7 @@ def page_overview(bundle):
             steps = [
                 ("Collect", "6 sensor features from industrial machines — temperature, RPM, torque & tool wear."),
                 ("Clean", "Drop ID columns & leakage flags (TWF, HDF, PWF, OSF, RNF) that would cheat the model."),
-                ("Train", "Logistic Regression + KNN classifiers on 80% of data with standardized features."),
+                ("Train", "Logistic Regression + Random Forest on 80% of data — both handle class imbalance natively."),
                 ("Deploy", "Score live readings instantly — both models vote on failure probability."),
             ]
             for i, (title, desc) in enumerate(steps, 1):
@@ -776,9 +776,9 @@ def page_overview(bundle):
                         </p>
                     </div>
                     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1rem;">
-                        <span class="model-pill pill-knn">KNN k={bundle.best_k}</span>
+                        <span class="model-pill pill-knn">Random Forest</span>
                         <p style="color:var(--muted);font-size:0.85rem;margin:0.6rem 0 0 0;">
-                            Higher <strong style="color:var(--accent)">overall accuracy</strong> on normal ops.
+                            Higher <strong style="color:var(--accent)">overall accuracy</strong> — 200 trees with balanced subsampling.
                         </p>
                     </div>
                 </div>
@@ -907,7 +907,7 @@ def page_predict(bundle):
         "Tool wear [min]": tool_wear,
     }
     result = predict(bundle, inputs)
-    combined_prob = (result["lr_prob"] + result["knn_prob"]) / 2
+    combined_prob = (result["lr_prob"] + result["rf_prob"]) / 2
 
     with right:
         with st.container(border=True):
@@ -927,8 +927,8 @@ def page_predict(bundle):
                 css = "result-danger" if result["lr_label"] == "Failure" else "result-safe"
                 render_result_card("Logistic Regression", result["lr_label"], result["lr_prob"], css, "pill-lr")
             with r2:
-                css = "result-danger" if result["knn_label"] == "Failure" else "result-safe"
-                render_result_card(f"KNN (k={bundle.best_k})", result["knn_label"], result["knn_prob"], css, "pill-knn")
+                css = "result-danger" if result["rf_label"] == "Failure" else "result-safe"
+                render_result_card("Random Forest", result["rf_label"], result["rf_prob"], css, "pill-knn")
 
     with st.container(border=True):
         st.markdown('<div class="panel-title">Input snapshot</div>', unsafe_allow_html=True)
@@ -943,14 +943,14 @@ def page_analytics(bundle):
     )
 
     lr_m = classification_metrics(bundle.y_test, bundle.y_pred_lr)
-    knn_m = classification_metrics(bundle.y_test, bundle.y_pred_knn)
+    rf_m = classification_metrics(bundle.y_test, bundle.y_pred_rf)
 
     cols = st.columns(4)
     metrics = [
         ("LR Accuracy", f"{lr_m['accuracy']:.1%}", C["accent"]),
         ("LR Failure Recall", f"{lr_m['recall_failure']:.1%}", C["green"]),
-        ("KNN Accuracy", f"{knn_m['accuracy']:.1%}", C["accent2"]),
-        ("KNN Failure Recall", f"{knn_m['recall_failure']:.1%}", C["amber"]),
+        ("RF Accuracy", f"{rf_m['accuracy']:.1%}", C["accent2"]),
+        ("RF Failure Recall", f"{rf_m['recall_failure']:.1%}", C["amber"]),
     ]
     for col, (label, val, color) in zip(cols, metrics):
         with col:
@@ -958,8 +958,8 @@ def page_analytics(bundle):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab_cm, tab_roc, tab_k, tab_feat, tab_report = st.tabs([
-        "🎯 Confusion Matrices", "📈 ROC Curve", "🔢 K Tuning", "⚖️ Feature Importance", "📋 Reports",
+    tab_cm, tab_roc, tab_feat, tab_report = st.tabs([
+        "🎯 Confusion Matrices", "📈 ROC Curve", "⚖️ Feature Importance", "📋 Reports",
     ])
 
     with tab_cm:
@@ -971,12 +971,13 @@ def page_analytics(bundle):
             )
         with c2:
             st.plotly_chart(
-                confusion_fig(knn_m["confusion_matrix"], f"KNN (k={bundle.best_k})", C["accent2"]),
+                confusion_fig(rf_m["confusion_matrix"], "Random Forest", C["accent2"]),
                 width="stretch",
             )
 
     with tab_roc:
         fpr, tpr, roc_auc, _ = roc_data(bundle.y_test, bundle.y_prob_lr)
+        fpr_rf, tpr_rf, roc_auc_rf, _ = roc_data(bundle.y_test, bundle.y_prob_rf)
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=fpr, y=tpr, mode="lines", fill="tozeroy",
@@ -985,47 +986,62 @@ def page_analytics(bundle):
             line=dict(color=C["accent"], width=3),
         ))
         fig.add_trace(go.Scatter(
+            x=fpr_rf, y=tpr_rf, mode="lines",
+            name=f"Random Forest (AUC = {roc_auc_rf:.3f})",
+            line=dict(color=C["accent2"], width=3),
+        ))
+        fig.add_trace(go.Scatter(
             x=[0, 1], y=[0, 1], mode="lines", name="Random baseline",
             line=dict(dash="dot", color=C["muted"], width=1),
         ))
-        fig.update_layout(title=f"ROC Curve — AUC {roc_auc:.3f}", xaxis_title="False Positive Rate", yaxis_title="True Positive Rate", height=440)
+        fig.update_layout(title="ROC Curve — LR vs Random Forest", xaxis_title="False Positive Rate", yaxis_title="True Positive Rate", height=440)
         st.plotly_chart(apply_plotly_style(fig), width="stretch")
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("AUC Score", f"{roc_auc:.3f}")
-        col2.metric("FPR at 50% threshold", f"{fpr[len(fpr)//2]:.1%}")
-        col3.metric("TPR at 50% threshold", f"{tpr[len(tpr)//2]:.1%}")
-
-    with tab_k:
-        ks = list(bundle.knn_k_accuracies.keys())
-        accs = [bundle.knn_k_accuracies[k] for k in ks]
-        colors = [C["accent2"] if k != bundle.best_k else C["accent"] for k in ks]
-        fig = go.Figure(go.Bar(x=ks, y=accs, marker_color=colors, text=[f"{a:.1%}" for a in accs], textposition="outside"))
-        fig.update_layout(title="K Value vs Accuracy", xaxis_title="K (neighbors)", yaxis_title="Accuracy", yaxis_tickformat=".1%", height=400)
-        st.plotly_chart(apply_plotly_style(fig), width="stretch")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("LR AUC", f"{roc_auc:.3f}")
+        col2.metric("RF AUC", f"{roc_auc_rf:.3f}")
+        col3.metric("LR FPR @50%", f"{fpr[len(fpr)//2]:.1%}")
+        col4.metric("LR TPR @50%", f"{tpr[len(tpr)//2]:.1%}")
 
     with tab_feat:
-        coefs = bundle.lr.coef_[0]
-        feat_df = pd.DataFrame({"Feature": bundle.feature_cols, "Coefficient": coefs})
-        feat_df["Feature"] = feat_df["Feature"].replace({
+        feat_rename = {
             "Type": "Product Type",
             "Air temperature [K]": "Air Temp",
             "Process temperature [K]": "Process Temp",
             "Rotational speed [rpm]": "RPM",
             "Torque [Nm]": "Torque",
             "Tool wear [min]": "Tool Wear",
-        })
-        feat_df["Direction"] = feat_df["Coefficient"].apply(lambda x: "→ Failure" if x > 0 else "→ Safe")
-        fig = px.bar(
-            feat_df.sort_values("Coefficient"),
-            x="Coefficient", y="Feature", orientation="h",
-            color="Coefficient",
-            color_continuous_scale=[C["green"], C["surface"], C["red"]],
-            text="Direction",
-        )
-        fig.update_traces(textposition="outside")
-        fig.update_layout(title="Logistic Regression Coefficients", height=400, coloraxis_showscale=False)
-        st.plotly_chart(apply_plotly_style(fig), width="stretch")
+        }
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            coefs = bundle.lr.coef_[0]
+            feat_df = pd.DataFrame({"Feature": bundle.feature_cols, "Coefficient": coefs})
+            feat_df["Feature"] = feat_df["Feature"].replace(feat_rename)
+            feat_df["Direction"] = feat_df["Coefficient"].apply(lambda x: "→ Failure" if x > 0 else "→ Safe")
+            fig = px.bar(
+                feat_df.sort_values("Coefficient"),
+                x="Coefficient", y="Feature", orientation="h",
+                color="Coefficient",
+                color_continuous_scale=[C["green"], C["surface"], C["red"]],
+                text="Direction",
+            )
+            fig.update_traces(textposition="outside")
+            fig.update_layout(title="LR Coefficients", height=400, coloraxis_showscale=False)
+            st.plotly_chart(apply_plotly_style(fig), width="stretch")
+        with fc2:
+            imp_df = pd.DataFrame({
+                "Feature": list(bundle.rf_feature_importances.keys()),
+                "Importance": list(bundle.rf_feature_importances.values()),
+            })
+            imp_df["Feature"] = imp_df["Feature"].replace(feat_rename)
+            fig2 = px.bar(
+                imp_df.sort_values("Importance"),
+                x="Importance", y="Feature", orientation="h",
+                color="Importance",
+                color_continuous_scale=[C["surface"], C["accent2"]],
+            )
+            fig2.update_layout(title="RF Feature Importances", height=400, coloraxis_showscale=False)
+            st.plotly_chart(apply_plotly_style(fig2), width="stretch")
 
     with tab_report:
         c1, c2 = st.columns(2)
@@ -1033,8 +1049,8 @@ def page_analytics(bundle):
             st.markdown('<span class="model-pill pill-lr">Logistic Regression</span>', unsafe_allow_html=True)
             st.dataframe(report_df(lr_m["report"]), width="stretch", hide_index=True)
         with c2:
-            st.markdown(f'<span class="model-pill pill-knn">KNN k={bundle.best_k}</span>', unsafe_allow_html=True)
-            st.dataframe(report_df(knn_m["report"]), width="stretch", hide_index=True)
+            st.markdown('<span class="model-pill pill-knn">Random Forest</span>', unsafe_allow_html=True)
+            st.dataframe(report_df(rf_m["report"]), width="stretch", hide_index=True)
 
 
 def page_explorer(bundle):
@@ -1208,20 +1224,20 @@ def page_batch(bundle):
                     **inputs,
                     "LR prediction": r["lr_label"],
                     "LR probability": round(r["lr_prob"], 4),
-                    "KNN prediction": r["knn_label"],
-                    "KNN probability": round(r["knn_prob"], 4),
+                    "RF prediction": r["rf_label"],
+                    "RF probability": round(r["rf_prob"], 4),
                     "Models agree": r["agreement"],
                 })
             out = pd.DataFrame(rows)
 
         cols = st.columns(4)
         fail_lr = (out["LR prediction"] == "Failure").sum()
-        fail_knn = (out["KNN prediction"] == "Failure").sum()
+        fail_rf = (out["RF prediction"] == "Failure").sum()
         agree_pct = out["Models agree"].mean()
         for col, (icon, label, val, color) in zip(cols, [
             ("📊", "Rows Scored", f"{len(out):,}", C["accent"]),
             ("🔴", "LR Failures", str(fail_lr), C["red"]),
-            ("🟣", "KNN Failures", str(fail_knn), C["accent2"]),
+            ("🌲", "RF Failures", str(fail_rf), C["accent2"]),
             ("🤝", "Agreement", f"{agree_pct:.1%}", C["green"]),
         ]):
             with col:
@@ -1280,7 +1296,7 @@ def render_top_nav(bundle) -> str:
             f"""
             <div class="nav-status">
                 <span class="status-dot"></span> <strong>Online</strong><br>
-                LR + KNN (k={bundle.best_k})<br>
+                LR + Random Forest<br>
                 {len(bundle.y_test):,} test records
             </div>
             """,

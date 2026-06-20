@@ -58,6 +58,8 @@ The application combines **Logistic Regression** and **Random Forest** classifie
 * Removal of data leakage columns (TWF, HDF, PWF, OSF, RNF)
 * Stratified train/test split (80/20) to preserve class distribution
 
+---
+
 ### Handling Class Imbalance
 
 The dataset is highly imbalanced — only **~3.4%** of records are failures. A naive model that always predicts "No Failure" would score **96.6% accuracy** while catching zero real breakdowns.
@@ -67,11 +69,15 @@ To address this:
 - **Random Forest** uses `class_weight="balanced_subsample"` for per-tree rebalancing
 - The decision threshold is lowered to **0.30** (vs. the default 0.50) — in predictive maintenance, missing a real failure is far more costly than a false alarm
 
+---
+
 ### Why LR Accuracy Appears Lower (~67%)
 
 LR's lower raw accuracy is **intentional and correct**. With the threshold set to 0.30, the model flags more borderline cases as potential failures. This trades some "No Failure" correct predictions for dramatically better recall on actual failures — which is exactly the right behaviour for maintenance systems. Raw accuracy is a misleading metric on imbalanced data; **failure recall and F1 score** are what matter.
 
 The notebook baseline (`Machine_Failure_Prediction.ipynb`) used the default 0.50 threshold without class-imbalance handling, which gave LR **81.75% accuracy** but poor failure recall. The production `model.py` prioritises catching real failures.
+
+---
 
 ### Models Used
 
@@ -84,6 +90,8 @@ Strengths:
 * Interpretable through feature coefficients
 * Handles imbalance natively via `class_weight`
 
+---
+
 #### Random Forest
 200-tree ensemble classifier trained on raw (unscaled) features with per-tree balanced subsampling.
 
@@ -92,6 +100,8 @@ Strengths:
 * Handles non-linear relationships
 * Provides feature importance (mean decrease in impurity)
 * Robust to outliers
+
+---
 
 ### Why KNN Was Replaced with Random Forest
 
@@ -121,6 +131,7 @@ The model predicts machine failure using six operational variables:
 **Target Variable:**
 Machine failure (binary: 0 = No Failure, 1 = Failure)
 
+---
 
 **Class distribution:** ~9,661 No Failure / ~339 Failure (~3.4% positive rate)
 
@@ -150,6 +161,8 @@ Visualization	Plotly
 ✔ Batch process CSV uploads
 ✔ Download enriched prediction reports
 
+---
+
 🎯 Learning Outcomes
 This project demonstrates:
 
@@ -159,5 +172,8 @@ Threshold tuning for domain-appropriate risk tradeoffs
 Model selection reasoning — when to replace one algorithm with another
 Interactive dashboard development with Streamlit
 Production-style ML application deployment on Streamlit Cloud
+
+---
+
 📜 License
 This project is intended for educational and portfolio purposes.
